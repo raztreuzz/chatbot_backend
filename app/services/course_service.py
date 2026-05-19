@@ -48,7 +48,9 @@ class CourseService:
         if not data:
             return "No tengo registrada la fecha de parcial de ese curso."
 
-        return f"El parcial de {data['name']} está registrado para: {data['exam']}."
+        formatted_date = str(data["exam"]).split("T")[0]
+
+        return f"El parcial de {data['name']} está registrado para: {formatted_date}."
 
     def get_info(self, course: str | None) -> str:
         key = self.normalize(course)
