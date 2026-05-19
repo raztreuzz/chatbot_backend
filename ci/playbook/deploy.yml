@@ -44,6 +44,10 @@
       delegate_to: localhost
       become: false
 
+    - name: Definir puerto de la aplicacion
+      ansible.builtin.set_fact:
+        app_port: "{{ env_file_content.content | b64decode | regex_search('(?m)^APP_PORT=(.+)$', '\\1') | first | default('8000') }}"
+
     - name: Crear directorio base de despliegue
       ansible.builtin.file:
         path: "{{ deploy_path }}"
@@ -81,35 +85,76 @@
       register: docker_compose_version
       changed_when: false
 
-    - name: Detener servicios anteriores
-      ansible.builtin.command:
-        cmd: "docker compose -f {{ compose_target_name }} down --remove-orphans"
-        chdir: "{{ deploy_path }}"
-      changed_when: true
-
-    - name: Limpiar cache de construccion de Docker
-      ansible.builtin.command: docker builder prune -f
-      changed_when: true
-
-    - name: Limpiar imagenes colgadas de Docker
-      ansible.builtin.command: docker image prune -f
-      changed_when: true
-
     - name: Construir y levantar servicios
-      ansible.builtin.command:
-        cmd: "docker compose -f {{ compose_target_name }} build --no-cache"
-        chdir: "{{ deploy_path }}"
-      changed_when: true
+      block:
+        - name: Levantar servicios con cache de Docker
+          ansible.builtin.command:
+            cmd: "docker compose -f {{ compose_target_name }} up -d --build --remove-orphans"
+            chdir: "{{ deploy_path }}"
+          changed_when: true
 
-    - name: Levantar servicios
-      ansible.builtin.command:
-        cmd: "docker compose -f {{ compose_target_name }} up -d"
-        chdir: "{{ deploy_path }}"
-      changed_when: true
+      rescue:
+        - name: Limpiar cache de construccion de Docker
+          ansible.builtin.command: docker builder prune -f
+          changed_when: true
+
+        - name: Limpiar imagenes colgadas de Docker
+          ansible.builtin.command: docker image prune -f
+          changed_when: true
+
+        - name: Reconstruir sin cache despues de limpiar Docker
+          ansible.builtin.command:
+            cmd: "docker compose -f {{ compose_target_name }} build --no-cache"
+            chdir: "{{ deploy_path }}"
+          changed_when: true
+
+        - name: Levantar servicios despues de reconstruir
+          ansible.builtin.command:
+            cmd: "docker compose -f {{ compose_target_name }} up -d --remove-orphans"
+            chdir: "{{ deploy_path }}"
+          changed_when: true
 
     - name: Revisar salud del webhook
-      ansible.builtin.uri:
-        url: "http://localhost:{{ (env_file_content.content | b64decode | regex_search('(?m)^APP_PORT=(.+)$', '\\1') | first | default('8000')) }}/health"
-        method: GET
-        status_code: 200
-      register: health_check
+      block:
+        - name: Esperar puerto del webhook
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ app_port }}"
+            timeout: 30
+
+        - name: Consultar endpoint de salud
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ app_port }}/health"
+            method: GET
+            status_code: 200
+          register: health_check
+          retries: 5
+          delay: 2
+          until: health_check.status == 200
+
+      rescue:
+        - name: Mostrar estado de Docker Compose
+          ansible.builtin.command:
+            cmd: "docker compose -f {{ compose_target_name }} ps"
+            chdir: "{{ deploy_path }}"
+          register: compose_ps
+          changed_when: false
+
+        - name: Imprimir estado de Docker Compose
+          ansible.builtin.debug:
+            var: compose_ps.stdout_lines
+
+        - name: Mostrar logs del webhook
+          ansible.builtin.command:
+            cmd: "docker compose -f {{ compose_target_name }} logs --tail=100 webhook"
+            chdir: "{{ deploy_path }}"
+          register: webhook_logs
+          changed_when: false
+
+        - name: Imprimir logs del webhook
+          ansible.builtin.debug:
+            var: webhook_logs.stdout_lines
+
+        - name: Fallar despliegue por salud no disponible
+          ansible.builtin.fail:
+            msg: "El webhook no respondio en http://127.0.0.1:{{ app_port }}/health"
