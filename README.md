@@ -54,5 +54,3 @@ curl http://localhost:8000/health
 ## Despliegue
 
 El despliegue esta preparado para Jenkins y Ansible. El pipeline usa credenciales de Jenkins para recibir el archivo `.env` y el `docker-compose.yml` de despliegue, sincroniza el proyecto al servidor y levanta el contenedor.
-
-El archivo `.env` real no debe subirse al repositorio. Usa `.env.example` como plantilla.
