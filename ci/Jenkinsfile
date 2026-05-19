@@ -2,38 +2,89 @@ pipeline {
     agent any
 
     environment {
+        SSH_KEY_ID = 'ark-deploy-ssh-key'
+        ENV_FILE_ID = 'chatbot-env'
+        COMPOSE_FILE_ID = 'chatbot-docker-compose'
+        PROJECT_NAME = 'zara_webhook'
         ANSIBLE_HOST_KEY_CHECKING = 'False'
-        DEPLOY_BRANCH = 'main'
-        DEPLOY_PATH = '/home/raztreuzz/apps/zara-webhook'
-        SSH_USER = 'raztreuzz'
-        TARGET_HOST = '100.103.47.3'
-        APP_PORT = '8000'
+    }
+
+    parameters {
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Rama a desplegar manualmente')
     }
 
     stages {
-        stage('Checkout') {
+        stage('Validar Parametros') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Deploy') {
-            steps {
+                script {
+                    env.DEPLOY_BRANCH = params.BRANCH_NAME?.trim() ? params.BRANCH_NAME.trim() : 'main'
+                }
                 sh '''
-                    export REPO_URL="${GIT_URL}"
-                    ansible-playbook \
-                      -i "ci/playbook'/inventory.ini" \
-                      "ci/playbook'/deploy.yml"
+                  set -eu
+                  [ -n "${DEPLOY_BRANCH}" ] || (echo "DEPLOY_BRANCH es requerido" && exit 1)
+                  echo "Rama de despliegue: ${DEPLOY_BRANCH}"
                 '''
             }
         }
 
-        stage('Verify') {
+        stage('Crear Inventario y Desplegar') {
             steps {
-                sh '''
-                    ssh "${SSH_USER}@${TARGET_HOST}" "curl -f http://localhost:${APP_PORT}/health"
-                '''
+                withCredentials([
+                    file(credentialsId: env.ENV_FILE_ID, variable: 'ENV_FILE'),
+                    file(credentialsId: env.COMPOSE_FILE_ID, variable: 'COMPOSE_FILE')
+                ]) {
+                    script {
+                        env.DEPLOY_PATH = sh(
+                            script: '''
+                              set -eu
+                              grep '^DEPLOY_PATH=' "$ENV_FILE" | head -n1 | cut -d= -f2-
+                            ''',
+                            returnStdout: true
+                        ).trim()
+                    }
+
+                    sh '''
+                      set -eu
+
+                      TARGET_HOST="$(grep '^TARGET_HOST=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
+                      SSH_USER="$(grep '^SSH_USER=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
+                      DEPLOY_PATH="$(grep '^DEPLOY_PATH=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
+
+                      [ -n "$TARGET_HOST" ] || (echo "TARGET_HOST no esta definido en el .env de Jenkins" && exit 1)
+                      [ -n "$SSH_USER" ] || (echo "SSH_USER no esta definido en el .env de Jenkins" && exit 1)
+                      [ -n "$DEPLOY_PATH" ] || (echo "DEPLOY_PATH no esta definido en el .env de Jenkins" && exit 1)
+
+                      mkdir -p ci/playbook/inventory
+                      cat > ci/playbook/inventory/inventory.ini <<EOF
+[zara_webhook]
+target ansible_host=${TARGET_HOST} ansible_user=${SSH_USER} ansible_connection=ssh
+
+[zara_webhook:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_python_interpreter=/usr/bin/python3
+EOF
+                    '''
+
+                    ansiblePlaybook(
+                        playbook: 'ci/playbook/deploy.yml',
+                        inventory: 'ci/playbook/inventory/inventory.ini',
+                        credentialsId: "${SSH_KEY_ID}",
+                        extraVars: [
+                            branch_name: "${env.DEPLOY_BRANCH}",
+                            deploy_path: "${env.DEPLOY_PATH}",
+                            env_file: ENV_FILE,
+                            compose_file: COMPOSE_FILE,
+                            compose_target_name: 'docker-compose.yml'
+                        ],
+                        colorized: true
+                    )
+                }
             }
         }
+    }
+
+    post {
+        success { echo "Despliegue manual de ${env.PROJECT_NAME} completado." }
+        failure { echo "El despliegue manual de ${env.PROJECT_NAME} fallo." }
     }
 }

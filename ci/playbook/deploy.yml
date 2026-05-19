@@ -3,73 +3,99 @@
   hosts: zara_webhook
   become: false
 
-  vars:
-    app_dir: "{{ lookup('env', 'DEPLOY_PATH') | default('/home/raztreuzz/apps/zara-webhook', true) }}"
-    repo_url: "{{ lookup('env', 'REPO_URL') }}"
-    repo_branch: "{{ lookup('env', 'DEPLOY_BRANCH') | default('main', true) }}"
-    app_port: "{{ lookup('env', 'APP_PORT') | default('8000', true) }}"
-    compose_dir: "{{ app_dir }}/ci/playbook'"
-
   pre_tasks:
-    - name: Validate repository URL
+    - name: Validar branch_name
       ansible.builtin.assert:
         that:
-          - repo_url | length > 0
-        fail_msg: "REPO_URL is empty. Create the repository and configure Jenkins SCM or set REPO_URL."
+          - branch_name is defined
+          - branch_name | length > 0
+        fail_msg: "Falta -e branch_name=..."
+
+    - name: Validar env_file
+      ansible.builtin.assert:
+        that:
+          - env_file is defined
+          - env_file | length > 0
+        fail_msg: "Falta -e env_file=..."
+
+    - name: Validar compose_file
+      ansible.builtin.assert:
+        that:
+          - compose_file is defined
+          - compose_file | length > 0
+        fail_msg: "Falta -e compose_file=..."
+
+    - name: Validar deploy_path
+      ansible.builtin.assert:
+        that:
+          - deploy_path is defined
+          - deploy_path | length > 0
+        fail_msg: "Falta -e deploy_path=..."
+
+    - name: Definir nombre destino del compose
+      ansible.builtin.set_fact:
+        compose_target_name: "{{ compose_target_name | default('docker-compose.yml') }}"
 
   tasks:
-    - name: Ensure application directory exists
+    - name: Cargar variables del .env de despliegue
+      ansible.builtin.slurp:
+        src: "{{ env_file }}"
+      register: env_file_content
+      delegate_to: localhost
+      become: false
+
+    - name: Crear directorio base de despliegue
       ansible.builtin.file:
-        path: "{{ app_dir }}"
+        path: "{{ deploy_path }}"
         state: directory
         mode: "0755"
 
-    - name: Clone or update repository
-      ansible.builtin.git:
-        repo: "{{ repo_url }}"
-        dest: "{{ app_dir }}"
-        version: "{{ repo_branch }}"
-        force: true
-        update: true
+    - name: Sincronizar proyecto al servidor
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ deploy_path }}/"
+        delete: false
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=venv"
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=.env"
+          - "--exclude=ci/playbook/inventory"
 
-    - name: Create runtime env file
-      ansible.builtin.copy:
-        dest: "{{ app_dir }}/.env"
-        mode: "0600"
-        content: |
-          APP_NAME=zara-webhook
-          APP_ENV=production
-          APP_HOST=0.0.0.0
-          APP_PORT={{ app_port }}
-          COMPOSE_PROJECT_NAME=zara_webhook
+    - name: Copiar perfil de entorno seleccionado
+      ansible.posix.synchronize:
+        src: "{{ env_file }}"
+        dest: "{{ deploy_path }}/.env"
+        delete: false
 
-    - name: Stop old services
+    - name: Copiar docker-compose de despliegue
+      ansible.posix.synchronize:
+        src: "{{ compose_file }}"
+        dest: "{{ deploy_path }}/{{ compose_target_name }}"
+        delete: false
+
+    - name: Verificar Docker Compose en el servidor
+      ansible.builtin.command: docker compose version
+      register: docker_compose_version
+      changed_when: false
+
+    - name: Detener servicios anteriores
       ansible.builtin.command:
-        cmd: docker compose down --remove-orphans
-        chdir: "{{ compose_dir }}"
-      environment:
-        APP_NAME: zara-webhook
-        APP_ENV: production
-        APP_HOST: 0.0.0.0
-        APP_PORT: "{{ app_port }}"
-        COMPOSE_PROJECT_NAME: zara_webhook
+        cmd: "docker compose -f {{ compose_target_name }} down --remove-orphans"
+        chdir: "{{ deploy_path }}"
       changed_when: true
 
-    - name: Build and start services
+    - name: Construir y levantar servicios
       ansible.builtin.command:
-        cmd: docker compose up -d --build
-        chdir: "{{ compose_dir }}"
-      environment:
-        APP_NAME: zara-webhook
-        APP_ENV: production
-        APP_HOST: 0.0.0.0
-        APP_PORT: "{{ app_port }}"
-        COMPOSE_PROJECT_NAME: zara_webhook
+        cmd: "docker compose -f {{ compose_target_name }} up -d --build"
+        chdir: "{{ deploy_path }}"
       changed_when: true
 
-    - name: Check webhook health
+    - name: Revisar salud del webhook
       ansible.builtin.uri:
-        url: "http://localhost:{{ app_port }}/health"
+        url: "http://localhost:{{ (env_file_content.content | b64decode | regex_search('(?m)^APP_PORT=(.+)$', '\\1') | first | default('8000')) }}/health"
         method: GET
         status_code: 200
       register: health_check

@@ -3,7 +3,7 @@ name: zara_webhook
 services:
   webhook:
     build:
-      context: ../..
+      context: .
     container_name: zara-webhook
     restart: unless-stopped
     environment:
