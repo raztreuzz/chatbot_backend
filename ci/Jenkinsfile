@@ -1,0 +1,39 @@
+pipeline {
+    agent any
+
+    environment {
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        DEPLOY_BRANCH = 'main'
+        DEPLOY_PATH = '/home/raztreuzz/apps/zara-webhook'
+        SSH_USER = 'raztreuzz'
+        TARGET_HOST = '100.103.47.3'
+        APP_PORT = '8000'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    export REPO_URL="${GIT_URL}"
+                    ansible-playbook \
+                      -i "ci/playbook'/inventory.ini" \
+                      "ci/playbook'/deploy.yml"
+                '''
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                sh '''
+                    ssh "${SSH_USER}@${TARGET_HOST}" "curl -f http://localhost:${APP_PORT}/health"
+                '''
+            }
+        }
+    }
+}

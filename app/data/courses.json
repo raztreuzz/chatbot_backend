@@ -1,0 +1,32 @@
+{
+  "ia": {
+    "name": "Inteligencia Artificial",
+    "schedule": "Martes 6:10 PM",
+    "exam": "21 de abril",
+    "topics": [
+      "agentes inteligentes",
+      "búsqueda",
+      "machine learning"
+    ]
+  },
+  "analisis 2": {
+    "name": "Análisis 2",
+    "schedule": "Jueves 6:10 PM",
+    "exam": "23 de abril",
+    "topics": [
+      "integrales",
+      "series",
+      "ecuaciones diferenciales"
+    ]
+  },
+  "redes": {
+    "name": "Redes",
+    "schedule": "Sábado 8:00 AM",
+    "exam": "25 de mayo",
+    "topics": [
+      "modelo OSI",
+      "direccionamiento IP",
+      "protocolos"
+    ]
+  }
+}
